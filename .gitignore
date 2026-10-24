@@ -48,5 +48,6 @@ app.*.map.json
 *.env
 *.env.*
 *.key
+exports/
 *.pem
 key.properties

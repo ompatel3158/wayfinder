@@ -36,6 +36,8 @@ dependencies:
   cupertino_icons: ^1.0.8
   ultsql: ^1.0.29
   http: ^1.6.0
+  pdf: ^3.13.1
+  file_picker: ^13.2.0
 
 dev_dependencies:
   flutter_test:

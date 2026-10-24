@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'agent.dart';
 import 'db.dart';
+import 'export.dart';
 import 'ingest.dart';
 
 void main() {
@@ -65,7 +66,16 @@ class ChatMessage {
   final bool isUser;
   final String text;
   final String? revealedText;
-  ChatMessage({required this.isUser, required this.text, this.revealedText});
+  final AgentResult? result;
+  final String? question;
+
+  ChatMessage({
+    required this.isUser,
+    required this.text,
+    this.revealedText,
+    this.result,
+    this.question,
+  });
 }
 
 class MainScreen extends StatefulWidget {
@@ -259,7 +269,7 @@ class _MainScreenState extends State<MainScreen> {
         if (mounted) setState(() => _showChunksCard = true);
       });
 
-      _startWordReveal(result.answer);
+      _startWordReveal(result.answer, result: result, question: q);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -274,12 +284,17 @@ class _MainScreenState extends State<MainScreen> {
     }
   }
 
-  void _startWordReveal(String fullText) {
+  void _startWordReveal(String fullText, {AgentResult? result, String? question}) {
     _wordRevealTimer?.cancel();
     final words = fullText.split(' ');
     if (words.isEmpty) {
       setState(() {
-        _messages.add(ChatMessage(isUser: false, text: fullText));
+        _messages.add(ChatMessage(
+          isUser: false,
+          text: fullText,
+          result: result,
+          question: question,
+        ));
       });
       _scrollToBottom();
       return;
@@ -287,7 +302,13 @@ class _MainScreenState extends State<MainScreen> {
 
     int currentWordCount = 0;
     final msgIndex = _messages.length;
-    _messages.add(ChatMessage(isUser: false, text: fullText, revealedText: ''));
+    _messages.add(ChatMessage(
+      isUser: false,
+      text: fullText,
+      revealedText: '',
+      result: result,
+      question: question,
+    ));
 
     _wordRevealTimer = Timer.periodic(const Duration(milliseconds: 20), (timer) {
       if (!mounted) {
@@ -298,12 +319,24 @@ class _MainScreenState extends State<MainScreen> {
       if (currentWordCount >= words.length) {
         timer.cancel();
         setState(() {
-          _messages[msgIndex] = ChatMessage(isUser: false, text: fullText, revealedText: fullText);
+          _messages[msgIndex] = ChatMessage(
+            isUser: false,
+            text: fullText,
+            revealedText: fullText,
+            result: result,
+            question: question,
+          );
         });
       } else {
         final partial = words.take(currentWordCount).join(' ');
         setState(() {
-          _messages[msgIndex] = ChatMessage(isUser: false, text: fullText, revealedText: partial);
+          _messages[msgIndex] = ChatMessage(
+            isUser: false,
+            text: fullText,
+            revealedText: partial,
+            result: result,
+            question: question,
+          );
         });
       }
       _scrollToBottom();
@@ -543,7 +576,10 @@ class _MainScreenState extends State<MainScreen> {
                   itemCount: _messages.length,
                   itemBuilder: (context, index) {
                     final msg = _messages[index];
-                    return _ChatBubble(message: msg);
+                    return _ChatBubble(
+                      message: msg,
+                      onShowToast: _showToast,
+                    );
                   },
                 ),
         ),
@@ -1374,12 +1410,17 @@ class _MainScreenState extends State<MainScreen> {
 
 class _ChatBubble extends StatelessWidget {
   final ChatMessage message;
-  const _ChatBubble({required this.message});
+  final void Function(String message)? onShowToast;
+
+  const _ChatBubble({required this.message, this.onShowToast});
 
   @override
   Widget build(BuildContext context) {
     final isUser = message.isUser;
     final textToShow = message.revealedText ?? message.text;
+    final hasResults = !isUser &&
+        message.result != null &&
+        (message.result!.rows.isNotEmpty || message.result!.chunks.isNotEmpty);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
@@ -1417,20 +1458,151 @@ class _ChatBubble extends StatelessWidget {
                   color: isUser ? const Color(0xFF334155) : kBorderColor,
                 ),
               ),
-              child: Text(
-                textToShow,
-                style: TextStyle(
-                  color: isUser ? Colors.white : kTextColor,
-                  fontSize: 14.5,
-                  height: 1.45,
-                  fontFamily: 'Inter',
-                  fontFamilyFallback: kTextFallback,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    textToShow,
+                    style: TextStyle(
+                      color: isUser ? Colors.white : kTextColor,
+                      fontSize: 14.5,
+                      height: 1.45,
+                      fontFamily: 'Inter',
+                      fontFamilyFallback: kTextFallback,
+                    ),
+                  ),
+                  if (hasResults) ...[
+                    const SizedBox(height: 10),
+                    _ExportButton(
+                      message: message,
+                      onShowToast: onShowToast,
+                    ),
+                  ],
+                ],
               ),
             ),
           ),
           if (isUser) const SizedBox(width: 28),
         ],
+      ),
+    );
+  }
+}
+
+class _ExportButton extends StatelessWidget {
+  final ChatMessage message;
+  final void Function(String message)? onShowToast;
+
+  const _ExportButton({
+    required this.message,
+    this.onShowToast,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final result = message.result!;
+    final hasRows = result.rows.isNotEmpty;
+
+    return PopupMenuButton<String>(
+      tooltip: 'Export Results',
+      color: kPanelColor,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: const BorderSide(color: kBorderColor),
+      ),
+      onSelected: (value) async {
+        try {
+          if (value == 'csv') {
+            if (!hasRows) {
+              onShowToast?.call('No rows to export as CSV.');
+              return;
+            }
+            final path = await saveCsv(rows: result.rows);
+            if (path != null) {
+              onShowToast?.call('Saved CSV: $path');
+            }
+          } else if (value == 'pdf') {
+            final path = await savePdfReport(
+              question: message.question ?? 'Wayfinder Report',
+              result: result,
+            );
+            if (path != null) {
+              onShowToast?.call('Saved PDF: $path');
+            }
+          }
+        } catch (e) {
+          onShowToast?.call('Export failed: $e');
+        }
+      },
+      itemBuilder: (context) => [
+        PopupMenuItem<String>(
+          value: 'csv',
+          enabled: hasRows,
+          child: Row(
+            children: [
+              Icon(
+                Icons.table_chart_outlined,
+                size: 16,
+                color: hasRows ? kTextColor : kMutedColor,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'CSV (result rows)',
+                style: TextStyle(
+                  color: hasRows ? kTextColor : kMutedColor,
+                  fontSize: 13,
+                  fontFamily: 'Inter',
+                  fontFamilyFallback: kTextFallback,
+                ),
+              ),
+            ],
+          ),
+        ),
+        PopupMenuItem<String>(
+          value: 'pdf',
+          child: Row(
+            children: [
+              Icon(Icons.picture_as_pdf_outlined, size: 16, color: kTextColor),
+              const SizedBox(width: 8),
+              Text(
+                'PDF report',
+                style: TextStyle(
+                  color: kTextColor,
+                  fontSize: 13,
+                  fontFamily: 'Inter',
+                  fontFamilyFallback: kTextFallback,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: kBgColor,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: kBorderColor),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.download_rounded, size: 14, color: kAccentColor),
+            SizedBox(width: 6),
+            Text(
+              'Export',
+              style: TextStyle(
+                color: kTextColor,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                fontFamily: 'Inter',
+                fontFamilyFallback: kTextFallback,
+              ),
+            ),
+            SizedBox(width: 4),
+            Icon(Icons.arrow_drop_down, size: 16, color: kMutedColor),
+          ],
+        ),
       ),
     );
   }
