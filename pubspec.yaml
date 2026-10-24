@@ -38,6 +38,7 @@ dependencies:
   http: ^1.6.0
   pdf: ^3.13.1
   file_picker: ^13.2.0
+  desktop_drop: ^0.8.0
 
 dev_dependencies:
   flutter_test:

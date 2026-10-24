@@ -1,10 +1,15 @@
 import 'dart:async';
+import 'dart:io';
+import 'package:desktop_drop/desktop_drop.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'agent.dart';
+import 'config.dart';
 import 'db.dart';
 import 'export.dart';
 import 'ingest.dart';
+import 'registry.dart';
 
 void main() {
   runApp(const WayfinderApp());
@@ -78,6 +83,26 @@ class ChatMessage {
   });
 }
 
+class ChatSession {
+  final String id;
+  String title;
+  final DateTime createdAt;
+  final List<ChatMessage> messages;
+  AgentResult? latestResult;
+  String? activeRoute;
+  String? errorMessage;
+
+  ChatSession({
+    required this.id,
+    required this.title,
+    required this.createdAt,
+    required this.messages,
+    this.latestResult,
+    this.activeRoute,
+    this.errorMessage,
+  });
+}
+
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
 
@@ -93,7 +118,23 @@ class _MainScreenState extends State<MainScreen> {
   final ScrollController _chatScrollController = ScrollController();
   final FocusNode _inputFocusNode = FocusNode();
 
-  final List<ChatMessage> _messages = [];
+  final List<ChatSession> _sessions = [];
+  int _currentSessionIndex = 0;
+
+  ChatSession get _currentSession {
+    if (_sessions.isEmpty) {
+      _sessions.add(ChatSession(
+        id: '1',
+        title: 'New Chat',
+        createdAt: DateTime.now(),
+        messages: [],
+      ));
+    }
+    return _sessions[_currentSessionIndex];
+  }
+
+  List<ChatMessage> get _messages => _currentSession.messages;
+
   bool _isRunning = false;
   String? _lastQuestion;
 
@@ -101,6 +142,12 @@ class _MainScreenState extends State<MainScreen> {
   AgentResult? _latestResult;
   String? _activeRoute;
   String? _errorMessage;
+
+  // Import and drag state
+  bool _isDragging = false;
+  bool _isImporting = false;
+  double _importProgress = 0.0;
+  String _importStatus = '';
 
   // Toast state
   String? _toastMessage;
@@ -151,6 +198,149 @@ class _MainScreenState extends State<MainScreen> {
     _toastTimer = Timer(const Duration(milliseconds: 1500), () {
       if (mounted) setState(() => _toastMessage = null);
     });
+  }
+
+  void _createNewChat() {
+    _wordRevealTimer?.cancel();
+    setState(() {
+      final newSession = ChatSession(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        title: 'Chat ${_sessions.length + 1}',
+        createdAt: DateTime.now(),
+        messages: [],
+      );
+      _sessions.add(newSession);
+      _currentSessionIndex = _sessions.length - 1;
+      _latestResult = null;
+      _activeRoute = null;
+      _errorMessage = null;
+      _showSqlCard = false;
+      _showRowsCard = false;
+      _showChunksCard = false;
+      for (var s in _steps) {
+        s.status = StepStatus.pending;
+        s.elapsedMs = 0;
+      }
+      _currentStepIndex = -1;
+    });
+    _scrollToBottom();
+  }
+
+  void _switchSession(int index) {
+    if (index < 0 || index >= _sessions.length) return;
+    _wordRevealTimer?.cancel();
+    setState(() {
+      _currentSessionIndex = index;
+      final session = _sessions[index];
+      _latestResult = session.latestResult;
+      _activeRoute = session.activeRoute;
+      _errorMessage = session.errorMessage;
+      _showSqlCard = session.latestResult?.sql != null;
+      _showRowsCard = session.latestResult?.rows.isNotEmpty ?? false;
+      _showChunksCard = session.latestResult?.chunks.isNotEmpty ?? false;
+      for (var s in _steps) {
+        s.status = StepStatus.pending;
+        s.elapsedMs = 0;
+      }
+      _currentStepIndex = -1;
+    });
+    _scrollToBottom();
+  }
+
+  void _deleteSession(int index) {
+    setState(() {
+      _sessions.removeAt(index);
+      if (_sessions.isEmpty) {
+        _sessions.add(ChatSession(
+          id: DateTime.now().millisecondsSinceEpoch.toString(),
+          title: 'New Chat',
+          createdAt: DateTime.now(),
+          messages: [],
+        ));
+        _currentSessionIndex = 0;
+      } else if (_currentSessionIndex >= _sessions.length) {
+        _currentSessionIndex = _sessions.length - 1;
+      }
+      final session = _sessions[_currentSessionIndex];
+      _latestResult = session.latestResult;
+      _activeRoute = session.activeRoute;
+      _errorMessage = session.errorMessage;
+      _showSqlCard = session.latestResult?.sql != null;
+      _showRowsCard = session.latestResult?.rows.isNotEmpty ?? false;
+      _showChunksCard = session.latestResult?.chunks.isNotEmpty ?? false;
+    });
+  }
+
+  Future<void> _importFile(File file) async {
+    final fileName = file.uri.pathSegments.last;
+    final ext = fileName.contains('.') ? fileName.split('.').last.toLowerCase() : '';
+    if (ext != 'csv' && ext != 'json' && ext != 'txt' && ext != 'md') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unsupported file type: .$ext. Supported: CSV, JSON, TXT, MD.'),
+          backgroundColor: Colors.redAccent,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isImporting = true;
+      _importProgress = 0.0;
+      _importStatus = 'Importing $fileName...';
+    });
+
+    try {
+      final message = await ingestCustomFile(
+        file,
+        onProgress: (prog, stat) {
+          if (mounted) {
+            setState(() {
+              _importProgress = prog;
+              _importStatus = stat;
+            });
+          }
+        },
+      );
+      if (mounted) {
+        _showToast(message);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to import $fileName: $e'),
+            backgroundColor: Colors.redAccent,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isImporting = false;
+          _importProgress = 0.0;
+          _importStatus = '';
+        });
+      }
+    }
+  }
+
+  Future<void> _pickAndImportFiles() async {
+    try {
+      final files = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['csv', 'json', 'txt', 'md'],
+      );
+      for (final f in files) {
+        if (f.path != null) {
+          await _importFile(File(f.path!));
+        }
+      }
+    } catch (e) {
+      _showToast('Error picking file: $e');
+    }
   }
 
   Future<void> _initializeApp() async {
@@ -213,6 +403,10 @@ class _MainScreenState extends State<MainScreen> {
     _inputController.clear();
     _lastQuestion = q;
 
+    if (_messages.isEmpty) {
+      _currentSession.title = q.length > 28 ? '${q.substring(0, 28)}...' : q;
+    }
+
     setState(() {
       _isRunning = true;
       _errorMessage = null;
@@ -232,9 +426,22 @@ class _MainScreenState extends State<MainScreen> {
     });
     _scrollToBottom();
 
+    final history = <Map<String, String>>[];
+    for (int i = 0; i < _messages.length - 1; i++) {
+      final m = _messages[i];
+      final text = m.revealedText ?? m.text;
+      if (text.isNotEmpty) {
+        history.add({
+          'role': m.isUser ? 'user' : 'assistant',
+          'content': text,
+        });
+      }
+    }
+
     try {
       final result = await ask(
         q,
+        history: history,
         onStep: (step) => _handleStepUpdate(step),
       );
 
@@ -255,6 +462,9 @@ class _MainScreenState extends State<MainScreen> {
         _latestResult = result;
         _activeRoute = result.route;
         _errorMessage = result.error;
+        _currentSession.latestResult = result;
+        _currentSession.activeRoute = result.route;
+        _currentSession.errorMessage = result.error;
         _isRunning = false;
       });
 
@@ -275,6 +485,7 @@ class _MainScreenState extends State<MainScreen> {
       setState(() {
         _isRunning = false;
         _errorMessage = e.toString();
+        _currentSession.errorMessage = e.toString();
         _messages.add(ChatMessage(
           isUser: false,
           text: 'An error occurred while processing the request.',
@@ -319,28 +530,493 @@ class _MainScreenState extends State<MainScreen> {
       if (currentWordCount >= words.length) {
         timer.cancel();
         setState(() {
-          _messages[msgIndex] = ChatMessage(
-            isUser: false,
-            text: fullText,
-            revealedText: fullText,
-            result: result,
-            question: question,
-          );
+          if (msgIndex < _messages.length) {
+            _messages[msgIndex] = ChatMessage(
+              isUser: false,
+              text: fullText,
+              revealedText: fullText,
+              result: result,
+              question: question,
+            );
+          }
         });
       } else {
         final partial = words.take(currentWordCount).join(' ');
         setState(() {
-          _messages[msgIndex] = ChatMessage(
-            isUser: false,
-            text: fullText,
-            revealedText: partial,
-            result: result,
-            question: question,
-          );
+          if (msgIndex < _messages.length) {
+            _messages[msgIndex] = ChatMessage(
+              isUser: false,
+              text: fullText,
+              revealedText: partial,
+              result: result,
+              question: question,
+            );
+          }
         });
       }
       _scrollToBottom();
     });
+  }
+
+  void _showChatHistoryDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return Dialog(
+              backgroundColor: kPanelColor,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: const BorderSide(color: kBorderColor),
+              ),
+              child: Container(
+                width: 520,
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.history_rounded,
+                            color: kAccentColor, size: 22),
+                        const SizedBox(width: 10),
+                        Text(
+                          'Chat History (${_sessions.length})',
+                          style: const TextStyle(
+                            color: kTextColor,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                            fontFamily: 'Inter',
+                            fontFamilyFallback: kTextFallback,
+                          ),
+                        ),
+                        const Spacer(),
+                        _HeaderButton(
+                          icon: Icons.add_rounded,
+                          label: 'New Chat',
+                          onTap: () {
+                            Navigator.of(ctx).pop();
+                            _createNewChat();
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded,
+                              color: kMutedColor, size: 20),
+                          onPressed: () => Navigator.of(ctx).pop(),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 360),
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        itemCount: _sessions.length,
+                        separatorBuilder: (_, _) =>
+                            const Divider(color: kBorderColor, height: 1),
+                        itemBuilder: (context, index) {
+                          final session = _sessions[index];
+                          final isActive = index == _currentSessionIndex;
+                          return InkWell(
+                            onTap: () {
+                              Navigator.of(ctx).pop();
+                              _switchSession(index);
+                            },
+                            borderRadius: BorderRadius.circular(8),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 10),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    isActive
+                                        ? Icons.chat_bubble_rounded
+                                        : Icons.chat_bubble_outline_rounded,
+                                    color:
+                                        isActive ? kAccentColor : kMutedColor,
+                                    size: 18,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          session.title,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            color: isActive
+                                                ? kTextColor
+                                                : kMutedColor,
+                                            fontWeight: isActive
+                                                ? FontWeight.w600
+                                                : FontWeight.w400,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '${session.messages.length} messages · ${_formatTime(session.createdAt)}',
+                                          style: TextStyle(
+                                            color: kMutedColor.withValues(
+                                                alpha: 0.7),
+                                            fontSize: 11.5,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (isActive)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 8, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: kAccentColor.withValues(
+                                            alpha: 0.15),
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                            color: kAccentColor.withValues(
+                                                alpha: 0.4)),
+                                      ),
+                                      child: const Text(
+                                        'Active',
+                                        style: TextStyle(
+                                          color: kAccentColor,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                  const SizedBox(width: 8),
+                                  IconButton(
+                                    icon: const Icon(
+                                        Icons.delete_outline_rounded,
+                                        size: 18,
+                                        color: kMutedColor),
+                                    tooltip: 'Delete Chat',
+                                    onPressed: () {
+                                      _deleteSession(index);
+                                      setDialogState(() {});
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showDataSourcesDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final tables = DataRegistry.instance.tables.values.toList();
+            final documents = DataRegistry.instance.documents.values.toList();
+
+            return Dialog(
+              backgroundColor: kPanelColor,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: const BorderSide(color: kBorderColor),
+              ),
+              child: Container(
+                width: 620,
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.storage_rounded,
+                            color: kAccentColor, size: 22),
+                        const SizedBox(width: 10),
+                        Text(
+                          'Data Sources (${DataRegistry.instance.totalSourcesCount})',
+                          style: const TextStyle(
+                            color: kTextColor,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w600,
+                            fontFamily: 'Inter',
+                            fontFamilyFallback: kTextFallback,
+                          ),
+                        ),
+                        const Spacer(),
+                        _HeaderButton(
+                          icon: Icons.add_rounded,
+                          label: 'Add Data',
+                          onTap: () async {
+                            Navigator.of(ctx).pop();
+                            await _pickAndImportFiles();
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded,
+                              color: kMutedColor, size: 20),
+                          onPressed: () => Navigator.of(ctx).pop(),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 420),
+                      child: SingleChildScrollView(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // Section: SQL Tables
+                            Row(
+                              children: [
+                                const Icon(Icons.table_chart_rounded,
+                                    size: 16, color: kRouteSql),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'SQL Tables (${tables.length})',
+                                  style: const TextStyle(
+                                    color: kTextColor,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            if (tables.isEmpty)
+                              const Padding(
+                                padding: EdgeInsets.symmetric(vertical: 8),
+                                child: Text(
+                                  'No SQL tables currently loaded.',
+                                  style: TextStyle(
+                                      color: kMutedColor, fontSize: 13),
+                                ),
+                              )
+                            else
+                              ListView.separated(
+                                shrinkWrap: true,
+                                physics: const NeverScrollableScrollPhysics(),
+                                itemCount: tables.length,
+                                separatorBuilder: (_, _) =>
+                                    const Divider(color: kBorderColor, height: 1),
+                                itemBuilder: (context, index) {
+                                  final tbl = tables[index];
+                                  return Padding(
+                                    padding:
+                                        const EdgeInsets.symmetric(vertical: 8),
+                                    child: Row(
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.all(8),
+                                          decoration: BoxDecoration(
+                                            color:
+                                                kRouteSql.withValues(alpha: 0.1),
+                                            borderRadius:
+                                                BorderRadius.circular(8),
+                                          ),
+                                          child: const Icon(
+                                              Icons.table_chart_rounded,
+                                              size: 18,
+                                              color: kRouteSql),
+                                        ),
+                                        const SizedBox(width: 12),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                tbl.tableName,
+                                                style: const TextStyle(
+                                                  color: kTextColor,
+                                                  fontWeight: FontWeight.w600,
+                                                  fontSize: 14,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                '${tbl.rowCount} rows · ${tbl.columns.length} columns · source: ${tbl.sourceFileName}',
+                                                style: TextStyle(
+                                                  color: kMutedColor.withValues(
+                                                      alpha: 0.8),
+                                                  fontSize: 12,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                tbl.columns
+                                                    .map((c) =>
+                                                        '${c.name} (${c.type.toLowerCase()})')
+                                                    .join(', '),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(
+                                                  color: kMutedColor,
+                                                  fontSize: 11,
+                                                  fontFamily: 'JetBrainsMono',
+                                                  fontFamilyFallback:
+                                                      kMonoFallback,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(
+                                              Icons.delete_outline_rounded,
+                                              size: 18,
+                                              color: kMutedColor),
+                                          tooltip: 'Remove Table',
+                                          onPressed: () async {
+                                            await AppDatabase.instance
+                                                .dropTable(tbl.tableName);
+                                            DataRegistry.instance
+                                                .unregisterTable(tbl.tableName);
+                                            setDialogState(() {});
+                                            setState(() {});
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                },
+                              ),
+
+                            const SizedBox(height: 20),
+
+                            // Section: Documents
+                            Row(
+                              children: [
+                                const Icon(Icons.article_rounded,
+                                    size: 16, color: kRouteVector),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Policy & Text Documents (${documents.length})',
+                                  style: const TextStyle(
+                                    color: kTextColor,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            if (documents.isEmpty)
+                              const Padding(
+                                padding: EdgeInsets.symmetric(vertical: 8),
+                                child: Text(
+                                  'No documents currently loaded.',
+                                  style: TextStyle(
+                                      color: kMutedColor, fontSize: 13),
+                                ),
+                              )
+                            else
+                              ListView.separated(
+                                shrinkWrap: true,
+                                physics: const NeverScrollableScrollPhysics(),
+                                itemCount: documents.length,
+                                separatorBuilder: (_, _) =>
+                                    const Divider(color: kBorderColor, height: 1),
+                                itemBuilder: (context, index) {
+                                  final doc = documents[index];
+                                  return Padding(
+                                    padding:
+                                        const EdgeInsets.symmetric(vertical: 8),
+                                    child: Row(
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.all(8),
+                                          decoration: BoxDecoration(
+                                            color: kRouteVector
+                                                .withValues(alpha: 0.1),
+                                            borderRadius:
+                                                BorderRadius.circular(8),
+                                          ),
+                                          child: const Icon(
+                                              Icons.article_rounded,
+                                              size: 18,
+                                              color: kRouteVector),
+                                        ),
+                                        const SizedBox(width: 12),
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                doc.sourceFileName,
+                                                style: const TextStyle(
+                                                  color: kTextColor,
+                                                  fontWeight: FontWeight.w600,
+                                                  fontSize: 14,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 2),
+                                              Text(
+                                                '${doc.chunkCount} vector embeddings indexed offline',
+                                                style: TextStyle(
+                                                  color: kMutedColor.withValues(
+                                                      alpha: 0.8),
+                                                  fontSize: 12,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(
+                                              Icons.delete_outline_rounded,
+                                              size: 18,
+                                              color: kMutedColor),
+                                          tooltip: 'Remove Document',
+                                          onPressed: () async {
+                                            await AppDatabase.instance
+                                                .deleteChunksBySource(
+                                                    doc.sourceFileName);
+                                            DataRegistry.instance
+                                                .unregisterDocument(
+                                                    doc.sourceFileName);
+                                            setDialogState(() {});
+                                            setState(() {});
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                },
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  String _formatTime(DateTime dt) {
+    return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
   }
 
   @override
@@ -382,80 +1058,226 @@ class _MainScreenState extends State<MainScreen> {
           _inputFocusNode.requestFocus();
         },
       },
-      child: Scaffold(
-        backgroundColor: kBgColor,
-        body: SafeArea(
-          child: Stack(
-            children: [
-              Column(
-                children: [
-                  _buildHeader(),
-                  Expanded(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        // Left Pane: Chat (~40%)
-                        Expanded(
-                          flex: 40,
-                          child: _buildChatPane(),
-                        ),
-                        Container(width: 1, color: kBorderColor),
-                        // Right Pane: Evidence (~60%)
-                        Expanded(
-                          flex: 60,
-                          child: RepaintBoundary(
-                            child: _buildEvidencePane(),
+      child: DropTarget(
+        onDragEntered: (details) => setState(() => _isDragging = true),
+        onDragExited: (details) => setState(() => _isDragging = false),
+        onDragDone: (details) async {
+          setState(() => _isDragging = false);
+          for (final f in details.files) {
+            await _importFile(File(f.path));
+          }
+        },
+        child: Scaffold(
+          backgroundColor: kBgColor,
+          body: SafeArea(
+            child: Stack(
+              children: [
+                Column(
+                  children: [
+                    _buildHeader(),
+                    Expanded(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          // Left Pane: Chat (~40%)
+                          Expanded(
+                            flex: 40,
+                            child: _buildChatPane(),
+                          ),
+                          Container(width: 1, color: kBorderColor),
+                          // Right Pane: Evidence (~60%)
+                          Expanded(
+                            flex: 60,
+                            child: RepaintBoundary(
+                              child: _buildEvidencePane(),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+
+                // Drag Overlay
+                if (_isDragging)
+                  Positioned.fill(
+                    child: Container(
+                      color: kBgColor.withValues(alpha: 0.85),
+                      child: Center(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 40, vertical: 32),
+                          decoration: BoxDecoration(
+                            color: kPanelColor,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: kAccentColor, width: 2),
+                            boxShadow: [
+                              BoxShadow(
+                                color: kAccentColor.withValues(alpha: 0.2),
+                                blurRadius: 24,
+                                spreadRadius: 4,
+                              ),
+                            ],
+                          ),
+                          child: const Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.file_upload_outlined,
+                                  color: kAccentColor, size: 48),
+                              SizedBox(height: 16),
+                              Text(
+                                'Drop files to add data',
+                                style: TextStyle(
+                                  color: kTextColor,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                  fontFamily: 'Inter',
+                                  fontFamilyFallback: kTextFallback,
+                                ),
+                              ),
+                              SizedBox(height: 8),
+                              Text(
+                                'Supported: CSV, JSON, TXT, MD',
+                                style: TextStyle(
+                                  color: kMutedColor,
+                                  fontSize: 13,
+                                  fontFamily: 'Inter',
+                                  fontFamilyFallback: kTextFallback,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                      ],
+                      ),
                     ),
                   ),
-                ],
-              ),
 
-              // Toast Banner
-              if (_toastMessage != null)
-                Positioned(
-                  bottom: 24,
-                  right: 32,
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 200),
-                    opacity: _toastMessage != null ? 1.0 : 0.0,
+                // Importing Progress Overlay
+                if (_isImporting)
+                  Positioned(
+                    top: 64,
+                    right: 24,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      width: 320,
+                      padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF1F2937),
-                        borderRadius: BorderRadius.circular(10),
+                        color: kPanelColor,
+                        borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: kAccentColor),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.3),
-                            blurRadius: 8,
+                            color: Colors.black.withValues(alpha: 0.4),
+                            blurRadius: 16,
                             offset: const Offset(0, 4),
                           ),
                         ],
                       ),
-                      child: Row(
+                      child: Column(
                         mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Icon(Icons.check_circle_rounded, color: kAccentColor, size: 16),
-                          const SizedBox(width: 8),
+                          Row(
+                            children: [
+                              const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: kAccentColor),
+                              ),
+                              const SizedBox(width: 10),
+                              const Text(
+                                'Importing Data...',
+                                style: TextStyle(
+                                  color: kTextColor,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const Spacer(),
+                              Text(
+                                '${(_importProgress * 100).toInt()}%',
+                                style: const TextStyle(
+                                  color: kAccentColor,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  fontFamily: 'JetBrainsMono',
+                                  fontFamilyFallback: kMonoFallback,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: LinearProgressIndicator(
+                              value:
+                                  _importProgress > 0 ? _importProgress : null,
+                              backgroundColor: kBorderColor,
+                              color: kAccentColor,
+                              minHeight: 6,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
                           Text(
-                            _toastMessage!,
+                            _importStatus,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                              color: kTextColor,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
-                              fontFamily: 'Inter',
-                              fontFamilyFallback: kTextFallback,
+                              color: kMutedColor,
+                              fontSize: 11.5,
                             ),
                           ),
                         ],
                       ),
                     ),
                   ),
-                ),
-            ],
+
+                // Toast Banner
+                if (_toastMessage != null)
+                  Positioned(
+                    bottom: 24,
+                    right: 32,
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 200),
+                      opacity: _toastMessage != null ? 1.0 : 0.0,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1F2937),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: kAccentColor),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.3),
+                              blurRadius: 8,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.check_circle_rounded,
+                                color: kAccentColor, size: 16),
+                            const SizedBox(width: 8),
+                            Text(
+                              _toastMessage!,
+                              style: const TextStyle(
+                                color: kTextColor,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                                fontFamily: 'Inter',
+                                fontFamilyFallback: kTextFallback,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -465,7 +1287,7 @@ class _MainScreenState extends State<MainScreen> {
   Widget _buildHeader() {
     return Container(
       height: 56,
-      padding: const EdgeInsets.symmetric(horizontal: 24),
+      padding: const EdgeInsets.symmetric(horizontal: 20),
       decoration: const BoxDecoration(
         color: kPanelColor,
         border: Border(bottom: BorderSide(color: kBorderColor, width: 1)),
@@ -483,7 +1305,7 @@ class _MainScreenState extends State<MainScreen> {
               letterSpacing: -0.3,
             ),
           ),
-          const SizedBox(width: 16),
+          const SizedBox(width: 14),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
@@ -491,17 +1313,17 @@ class _MainScreenState extends State<MainScreen> {
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: kBorderColor),
             ),
-            child: const Row(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
+                const Text(
                   '●',
                   style: TextStyle(color: kAccentColor, fontSize: 11),
                 ),
-                SizedBox(width: 6),
+                const SizedBox(width: 6),
                 Text(
-                  'Running locally on Gemma 4 E2B',
-                  style: TextStyle(
+                  'Running locally on ${Config.chatModel.split('/').last}',
+                  style: const TextStyle(
                     color: kMutedColor,
                     fontSize: 12,
                     fontWeight: FontWeight.w500,
@@ -513,6 +1335,31 @@ class _MainScreenState extends State<MainScreen> {
             ),
           ),
           const Spacer(),
+          _HeaderButton(
+            icon: Icons.add_comment_outlined,
+            label: 'New Chat',
+            onTap: _createNewChat,
+          ),
+          const SizedBox(width: 8),
+          _HeaderButton(
+            icon: Icons.history_rounded,
+            label: 'History (${_sessions.length})',
+            onTap: _showChatHistoryDialog,
+          ),
+          const SizedBox(width: 8),
+          _HeaderButton(
+            icon: Icons.storage_rounded,
+            label: 'Data Sources (${DataRegistry.instance.totalSourcesCount})',
+            onTap: _showDataSourcesDialog,
+          ),
+          const SizedBox(width: 8),
+          _HeaderButton(
+            icon: Icons.add_circle_outline_rounded,
+            label: 'Add Data',
+            isAccent: true,
+            onTap: _pickAndImportFiles,
+          ),
+          const SizedBox(width: 12),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
@@ -1694,5 +2541,75 @@ extension _StepListExt on List<StepInfo> {
       if (this[i].name.toLowerCase() == stepName.toLowerCase()) return i;
     }
     return -1;
+  }
+}
+
+class _HeaderButton extends StatefulWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool isAccent;
+
+  const _HeaderButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.isAccent = false,
+  });
+
+  @override
+  State<_HeaderButton> createState() => _HeaderButtonState();
+}
+
+class _HeaderButtonState extends State<_HeaderButton> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = widget.isAccent
+        ? (_isHovered
+            ? kAccentColor.withValues(alpha: 0.25)
+            : kAccentColor.withValues(alpha: 0.12))
+        : (_isHovered ? const Color(0xFF1F2430) : kBgColor);
+    final borderColor = widget.isAccent
+        ? kAccentColor.withValues(alpha: _isHovered ? 0.8 : 0.4)
+        : (_isHovered ? kAccentColor.withValues(alpha: 0.5) : kBorderColor);
+    final fg =
+        widget.isAccent ? kAccentColor : (_isHovered ? kTextColor : kMutedColor);
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: borderColor, width: 1),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(widget.icon, size: 15, color: fg),
+              const SizedBox(width: 6),
+              Text(
+                widget.label,
+                style: TextStyle(
+                  color: fg,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  fontFamily: 'Inter',
+                  fontFamilyFallback: kTextFallback,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

@@ -205,6 +205,37 @@ class AppDatabase {
     return 0;
   }
 
+  Future<void> dropTable(String tableName) async {
+    await executeScript('DROP TABLE IF EXISTS $tableName;');
+  }
+
+  Future<void> deleteChunksBySource(String source) async {
+    await executeScript(
+        "DELETE FROM policy_chunks WHERE source = '${source.replaceAll("'", "''")}';");
+    _chunkEmbeddings.removeWhere((item) => item.source == source);
+  }
+
+  Future<void> insertCustomRows(
+    String tableName,
+    List<String> columns,
+    List<List<dynamic>> rows,
+  ) async {
+    if (rows.isEmpty) return;
+    final colsStr = columns.join(', ');
+    final buffer = StringBuffer();
+    for (final row in rows) {
+      final valuesStr = row.map((val) {
+        if (val == null) return 'NULL';
+        if (val is num) return val.toString();
+        if (val is bool) return val ? '1' : '0';
+        final str = val.toString().replaceAll("'", "''");
+        return "'$str'";
+      }).join(', ');
+      buffer.writeln('INSERT INTO $tableName ($colsStr) VALUES ($valuesStr);');
+    }
+    await executeScript(buffer.toString());
+  }
+
   Future<void> close() async {
     if (_db != null) {
       await _db!.close();
