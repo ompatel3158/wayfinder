@@ -26,6 +26,8 @@ Future<void> main(List<String> args) async {
       'Which invoices break the refund policy?',
       'who are you',
       'hello',
+      'yo',
+      'what you can do',
     ];
 
     for (int i = 0; i < testQuestions.length; i++) {

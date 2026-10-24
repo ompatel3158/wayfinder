@@ -124,6 +124,24 @@ Return JSON only: {"route": "...", "search_query": "rules and limits for [topic]
   }
 
   if (route == 'none') {
+    onStep?.call('Answering');
+    const noneSystemPrompt =
+        'You are Wayfinder, a helpful, polite, and concise offline AI assistant for invoices (SQL) and company policies (Vector search). Answer conversationally, helpfully, and concisely (1 to 3 sentences). If asked what you can do or who you are, explain that you can query invoice records with SQL (totals, categories, amounts) and search company policy documents with semantic search to check compliance.';
+
+    String answer = '';
+    try {
+      answer = await chat(
+        [
+          {'role': 'system', 'content': noneSystemPrompt},
+          {'role': 'user', 'content': question},
+        ],
+        temp: 0.6,
+        maxTokens: 150,
+      );
+    } catch (e) {
+      answer = "I'm Wayfinder, an offline assistant. I can help query invoice records with SQL or check compliance against company policy documents. How can I help you today?";
+    }
+
     stopwatch.stop();
     return AgentResult(
       route: 'none',
@@ -131,7 +149,7 @@ Return JSON only: {"route": "...", "search_query": "rules and limits for [topic]
       sql: null,
       rows: const [],
       chunks: const [],
-      answer: "I'm Wayfinder, an offline assistant. Ask me about the invoices or the refund policy.",
+      answer: answer.trim(),
       error: null,
       milliseconds: stopwatch.elapsedMilliseconds,
     );
