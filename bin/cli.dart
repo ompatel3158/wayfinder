@@ -24,17 +24,13 @@ Future<void> main(List<String> args) async {
       'What is the total refund amount for Travel?',
       'How many days do I have to request a refund?',
       'Which invoices break the refund policy?',
-      'Which invoices break the refund policy?',
-      'Which invoices break the refund policy?',
+      'who are you',
+      'hello',
     ];
 
     for (int i = 0; i < testQuestions.length; i++) {
       stdout.writeln('\n----------------------------------------------');
-      if (i < 2) {
-        stdout.writeln('TEST QUESTION ${i + 1}: "${testQuestions[i]}"');
-      } else {
-        stdout.writeln('TEST QUESTION 3 (Run ${i - 1} of 3): "${testQuestions[i]}"');
-      }
+      stdout.writeln('TEST QUESTION ${i + 1}: "${testQuestions[i]}"');
       stdout.writeln('----------------------------------------------');
       await _handleQuestion(testQuestions[i]);
     }

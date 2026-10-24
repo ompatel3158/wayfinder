@@ -777,6 +777,9 @@ class _MainScreenState extends State<MainScreen> {
         case 'both':
           chipColor = kRouteBoth;
           break;
+        case 'none':
+          chipColor = kMutedColor;
+          break;
       }
     }
 
