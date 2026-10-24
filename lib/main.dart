@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'agent.dart';
 import 'db.dart';
 import 'ingest.dart';
@@ -80,6 +81,7 @@ class _MainScreenState extends State<MainScreen> {
 
   final TextEditingController _inputController = TextEditingController();
   final ScrollController _chatScrollController = ScrollController();
+  final FocusNode _inputFocusNode = FocusNode();
 
   final List<ChatMessage> _messages = [];
   bool _isRunning = false;
@@ -89,6 +91,10 @@ class _MainScreenState extends State<MainScreen> {
   AgentResult? _latestResult;
   String? _activeRoute;
   String? _errorMessage;
+
+  // Toast state
+  String? _toastMessage;
+  Timer? _toastTimer;
 
   // Staggered card visibility
   bool _showSqlCard = false;
@@ -121,10 +127,20 @@ class _MainScreenState extends State<MainScreen> {
 
   @override
   void dispose() {
+    _toastTimer?.cancel();
     _wordRevealTimer?.cancel();
     _inputController.dispose();
     _chatScrollController.dispose();
+    _inputFocusNode.dispose();
     super.dispose();
+  }
+
+  void _showToast(String message) {
+    _toastTimer?.cancel();
+    setState(() => _toastMessage = message);
+    _toastTimer = Timer(const Duration(milliseconds: 1500), () {
+      if (mounted) setState(() => _toastMessage = null);
+    });
   }
 
   Future<void> _initializeApp() async {
@@ -166,13 +182,11 @@ class _MainScreenState extends State<MainScreen> {
     if (!mounted) return;
 
     setState(() {
-      // Complete previous running step
       if (_currentStepIndex >= 0 && _currentStepIndex < _steps.length) {
         _steps[_currentStepIndex].status = StepStatus.completed;
         _steps[_currentStepIndex].elapsedMs = _stepStopwatch?.elapsedMilliseconds ?? 0;
       }
 
-      // Find current step
       final idx = _steps.indexKey(stepName);
       if (idx != -1) {
         _currentStepIndex = idx;
@@ -216,13 +230,11 @@ class _MainScreenState extends State<MainScreen> {
 
       if (!mounted) return;
 
-      // Complete last step
       if (_currentStepIndex >= 0 && _currentStepIndex < _steps.length) {
         _steps[_currentStepIndex].status = StepStatus.completed;
         _steps[_currentStepIndex].elapsedMs = _stepStopwatch?.elapsedMilliseconds ?? 0;
       }
 
-      // Mark unreached steps as skipped if not applicable to route
       for (var s in _steps) {
         if (s.status == StepStatus.pending) {
           s.status = StepStatus.skipped;
@@ -247,7 +259,6 @@ class _MainScreenState extends State<MainScreen> {
         if (mounted) setState(() => _showChunksCard = true);
       });
 
-      // Word-by-word reveal for answer
       _startWordReveal(result.answer);
     } catch (e) {
       if (!mounted) return;
@@ -332,33 +343,87 @@ class _MainScreenState extends State<MainScreen> {
       );
     }
 
-    return Scaffold(
-      backgroundColor: kBgColor,
-      body: SafeArea(
-        child: Column(
-          children: [
-            _buildHeader(),
-            Expanded(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.keyK, control: true): () {
+          _inputFocusNode.requestFocus();
+        },
+      },
+      child: Scaffold(
+        backgroundColor: kBgColor,
+        body: SafeArea(
+          child: Stack(
+            children: [
+              Column(
                 children: [
-                  // Left Pane: Chat (~40%)
+                  _buildHeader(),
                   Expanded(
-                    flex: 40,
-                    child: _buildChatPane(),
-                  ),
-                  Container(width: 1, color: kBorderColor),
-                  // Right Pane: Evidence (~60%)
-                  Expanded(
-                    flex: 60,
-                    child: RepaintBoundary(
-                      child: _buildEvidencePane(),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        // Left Pane: Chat (~40%)
+                        Expanded(
+                          flex: 40,
+                          child: _buildChatPane(),
+                        ),
+                        Container(width: 1, color: kBorderColor),
+                        // Right Pane: Evidence (~60%)
+                        Expanded(
+                          flex: 60,
+                          child: RepaintBoundary(
+                            child: _buildEvidencePane(),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
               ),
-            ),
-          ],
+
+              // Toast Banner
+              if (_toastMessage != null)
+                Positioned(
+                  bottom: 24,
+                  right: 32,
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 200),
+                    opacity: _toastMessage != null ? 1.0 : 0.0,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1F2937),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: kAccentColor),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.3),
+                            blurRadius: 8,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.check_circle_rounded, color: kAccentColor, size: 16),
+                          const SizedBox(width: 8),
+                          Text(
+                            _toastMessage!,
+                            style: const TextStyle(
+                              color: kTextColor,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              fontFamily: 'Inter',
+                              fontFamilyFallback: kTextFallback,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -415,6 +480,24 @@ class _MainScreenState extends State<MainScreen> {
             ),
           ),
           const Spacer(),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: kBgColor,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: kBorderColor),
+            ),
+            child: const Text(
+              'Ctrl + K',
+              style: TextStyle(
+                color: kMutedColor,
+                fontSize: 11,
+                fontFamily: 'JetBrainsMono',
+                fontFamilyFallback: kMonoFallback,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
           const Text(
             'Fully Offline',
             style: TextStyle(
@@ -492,73 +575,86 @@ class _MainScreenState extends State<MainScreen> {
                 ),
               ),
 
-              // Text Field Input
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _inputController,
-                      enabled: !_isRunning,
-                      style: const TextStyle(
-                        color: kTextColor,
-                        fontSize: 14,
-                        fontFamily: 'Inter',
-                        fontFamilyFallback: kTextFallback,
+              // Text Field Input with Keyboard Support
+              Focus(
+                onKeyEvent: (node, event) {
+                  if (event is KeyDownEvent &&
+                      event.logicalKey == LogicalKeyboardKey.enter &&
+                      !HardwareKeyboard.instance.isShiftPressed) {
+                    _submitQuestion(_inputController.text);
+                    return KeyEventResult.handled;
+                  }
+                  return KeyEventResult.ignored;
+                },
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _inputController,
+                        focusNode: _inputFocusNode,
+                        enabled: !_isRunning,
+                        maxLines: 3,
+                        minLines: 1,
+                        style: const TextStyle(
+                          color: kTextColor,
+                          fontSize: 14,
+                          fontFamily: 'Inter',
+                          fontFamilyFallback: kTextFallback,
+                        ),
+                        decoration: InputDecoration(
+                          hintText: _isRunning
+                              ? 'Agent is processing question...'
+                              : 'Ask a question (Enter sends, Shift+Enter newline)...',
+                          hintStyle: const TextStyle(color: kMutedColor),
+                          filled: true,
+                          fillColor: kBgColor,
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 12),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(color: kBorderColor),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(color: kBorderColor),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(color: kAccentColor),
+                          ),
+                        ),
                       ),
-                      decoration: InputDecoration(
-                        hintText: _isRunning
-                            ? 'Agent is processing question...'
-                            : 'Ask a question about invoices or policy...',
-                        hintStyle: const TextStyle(color: kMutedColor),
-                        filled: true,
-                        fillColor: kBgColor,
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 12),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: kBorderColor),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: kBorderColor),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: kAccentColor),
-                        ),
-                      ),
-                      onSubmitted: _submitQuestion,
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  SizedBox(
-                    height: 44,
-                    width: 44,
-                    child: ElevatedButton(
-                      onPressed: _isRunning
-                          ? null
-                          : () => _submitQuestion(_inputController.text),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: kAccentColor,
-                        foregroundColor: kBgColor,
-                        padding: EdgeInsets.zero,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                    const SizedBox(width: 8),
+                    SizedBox(
+                      height: 44,
+                      width: 44,
+                      child: ElevatedButton(
+                        onPressed: _isRunning
+                            ? null
+                            : () => _submitQuestion(_inputController.text),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: kAccentColor,
+                          foregroundColor: kBgColor,
+                          padding: EdgeInsets.zero,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
                         ),
+                        child: _isRunning
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: kBgColor,
+                                ),
+                              )
+                            : const Icon(Icons.arrow_upward_rounded, size: 20),
                       ),
-                      child: _isRunning
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: kBgColor,
-                              ),
-                            )
-                          : const Icon(Icons.arrow_upward_rounded, size: 20),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ],
           ),
@@ -897,15 +993,31 @@ class _MainScreenState extends State<MainScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Generated SQL Query',
-            style: TextStyle(
-              color: kMutedColor,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              fontFamily: 'Inter',
-              fontFamilyFallback: kTextFallback,
-            ),
+          Row(
+            children: [
+              const Text(
+                'Generated SQL Query',
+                style: TextStyle(
+                  color: kMutedColor,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  fontFamily: 'Inter',
+                  fontFamilyFallback: kTextFallback,
+                ),
+              ),
+              const Spacer(),
+              // Tier 2: Copy SQL button
+              IconButton(
+                icon: const Icon(Icons.copy_rounded, size: 16, color: kMutedColor),
+                tooltip: 'Copy SQL',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: sql));
+                  _showToast('SQL copied to clipboard');
+                },
+              ),
+            ],
           ),
           const SizedBox(height: 10),
           Container(
@@ -916,15 +1028,9 @@ class _MainScreenState extends State<MainScreen> {
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: kBorderColor),
             ),
-            child: SelectableText(
-              sql,
-              style: const TextStyle(
-                color: Color(0xFF93C5FD),
-                fontSize: 13.5,
-                fontFamily: 'JetBrainsMono',
-                fontFamilyFallback: kMonoFallback,
-                height: 1.4,
-              ),
+            // Tier 2: Simple Keyword Coloring using TextSpan
+            child: SelectableText.rich(
+              _highlightSql(sql),
             ),
           ),
         ],
@@ -932,9 +1038,68 @@ class _MainScreenState extends State<MainScreen> {
     );
   }
 
+  TextSpan _highlightSql(String sql) {
+    final keywords = {
+      'SELECT', 'FROM', 'WHERE', 'GROUP', 'BY', 'ORDER', 'SUM',
+      'COUNT', 'AVG', 'AND', 'OR', 'AS', 'LIMIT', 'NOT', 'IN'
+    };
+
+    final spans = <TextSpan>[];
+    final regex = RegExp(r"('(?:''|[^'])*'|\b\w+\b|[^\w\s']+|\s+)");
+    final matches = regex.allMatches(sql);
+
+    for (final m in matches) {
+      final token = m.group(0)!;
+      final upper = token.toUpperCase();
+      if (keywords.contains(upper)) {
+        spans.add(TextSpan(
+          text: token,
+          style: const TextStyle(
+            color: Color(0xFF60A5FA), // Accent blue keyword
+            fontWeight: FontWeight.w700,
+          ),
+        ));
+      } else if (token.startsWith("'")) {
+        spans.add(TextSpan(
+          text: token,
+          style: const TextStyle(
+            color: Color(0xFF34D399), // Green string literals
+          ),
+        ));
+      } else if (RegExp(r'^\d+(\.\d+)?$').hasMatch(token)) {
+        spans.add(TextSpan(
+          text: token,
+          style: const TextStyle(
+            color: Color(0xFFFBBF24), // Amber numbers
+          ),
+        ));
+      } else {
+        spans.add(TextSpan(
+          text: token,
+          style: const TextStyle(
+            color: kTextColor,
+          ),
+        ));
+      }
+    }
+
+    return TextSpan(
+      style: const TextStyle(
+        fontSize: 13.5,
+        fontFamily: 'JetBrainsMono',
+        fontFamilyFallback: kMonoFallback,
+        height: 1.4,
+      ),
+      children: spans,
+    );
+  }
+
   Widget _buildRowsCard(List<Map<String, dynamic>> rows) {
     if (rows.isEmpty) return const SizedBox.shrink();
     final columns = rows.first.keys.toList();
+    final isQuestion3 = _lastQuestion != null &&
+        (_lastQuestion!.toLowerCase().contains('break') ||
+            _lastQuestion!.toLowerCase().contains('refund policy'));
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -971,36 +1136,86 @@ class _MainScreenState extends State<MainScreen> {
             ],
           ),
           const SizedBox(height: 12),
+          // Tier 2: Staggered row fade-in + amber left border for question 3
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
-            child: DataTable(
-              headingRowColor: WidgetStateProperty.all(kBgColor),
-              dataRowColor: WidgetStateProperty.all(kPanelColor),
-              dividerThickness: 1,
-              headingTextStyle: const TextStyle(
-                color: kMutedColor,
-                fontWeight: FontWeight.w600,
-                fontSize: 12,
-                fontFamily: 'JetBrainsMono',
-                fontFamilyFallback: kMonoFallback,
-              ),
-              dataTextStyle: const TextStyle(
-                color: kTextColor,
-                fontSize: 13,
-                fontFamily: 'JetBrainsMono',
-                fontFamilyFallback: kMonoFallback,
-              ),
-              columns: columns
-                  .map((col) => DataColumn(label: Text(col)))
-                  .toList(),
-              rows: rows.map((row) {
-                return DataRow(
-                  cells: columns.map((col) {
-                    final val = row[col];
-                    return DataCell(Text(val?.toString() ?? 'null'));
-                  }).toList(),
-                );
-              }).toList(),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Header Row
+                Container(
+                  color: kBgColor,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: columns.map((col) {
+                      return SizedBox(
+                        width: 110,
+                        child: Text(
+                          col,
+                          style: const TextStyle(
+                            color: kMutedColor,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 12,
+                            fontFamily: 'JetBrainsMono',
+                            fontFamilyFallback: kMonoFallback,
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+                // Data Rows with Staggered Fade-in
+                ...rows.asMap().entries.map((entry) {
+                  final rowIndex = entry.key;
+                  final row = entry.value;
+
+                  return TweenAnimationBuilder<double>(
+                    duration: Duration(milliseconds: 200 + (rowIndex * 50)),
+                    curve: Curves.easeOutCubic,
+                    tween: Tween<double>(begin: 0.0, end: 1.0),
+                    builder: (context, opacity, child) {
+                      return Opacity(
+                        opacity: opacity,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: isQuestion3
+                                ? const Color(0xFFFBBF24).withValues(alpha: 0.05)
+                                : (rowIndex % 2 == 0 ? kPanelColor : kBgColor),
+                            border: Border(
+                              bottom: const BorderSide(color: kBorderColor, width: 0.5),
+                              left: isQuestion3
+                                  ? const BorderSide(color: Color(0xFFFBBF24), width: 3.5)
+                                  : BorderSide.none,
+                            ),
+                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: columns.map((col) {
+                              final val = row[col];
+                              return SizedBox(
+                                width: 110,
+                                child: Text(
+                                  val?.toString() ?? 'null',
+                                  style: TextStyle(
+                                    color: isQuestion3 && col == 'id'
+                                        ? const Color(0xFFFBBF24)
+                                        : kTextColor,
+                                    fontSize: 13,
+                                    fontFamily: 'JetBrainsMono',
+                                    fontFamilyFallback: kMonoFallback,
+                                  ),
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      );
+                    },
+                  );
+                }),
+              ],
             ),
           ),
         ],
@@ -1085,6 +1300,9 @@ class _MainScreenState extends State<MainScreen> {
                     ],
                   ),
                   const SizedBox(height: 8),
+                  // Tier 2: Animated similarity score bar
+                  _buildScoreBar(chunk.score),
+                  const SizedBox(height: 10),
                   Text(
                     chunk.text,
                     style: const TextStyle(
@@ -1101,6 +1319,52 @@ class _MainScreenState extends State<MainScreen> {
           }),
         ],
       ),
+    );
+  }
+
+  Widget _buildScoreBar(double score) {
+    return TweenAnimationBuilder<double>(
+      duration: const Duration(milliseconds: 350),
+      curve: Curves.easeOutCubic,
+      tween: Tween<double>(begin: 0.0, end: score),
+      builder: (context, val, child) {
+        return Row(
+          children: [
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: Container(
+                  height: 4.5,
+                  color: kBorderColor,
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: FractionallySizedBox(
+                      widthFactor: val.clamp(0.0, 1.0),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: kRouteVector,
+                          borderRadius: BorderRadius.circular(3),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '${(val * 100).toStringAsFixed(1)}%',
+              style: const TextStyle(
+                color: kAccentColor,
+                fontSize: 11,
+                fontFamily: 'JetBrainsMono',
+                fontFamilyFallback: kMonoFallback,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -1257,4 +1521,3 @@ extension _StepListExt on List<StepInfo> {
     return -1;
   }
 }
-
