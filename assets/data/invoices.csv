@@ -1,0 +1,16 @@
+id,vendor,category,amount,invoice_date,refund_amount,refund_days,approved
+INV-101,CloudScale,Software,1200,2026-08-05,0,0,0
+INV-102,DeltaAir,Travel,4500,2026-08-12,1500,12,0
+INV-103,ApexTravel,Travel,7200,2026-08-19,6000,14,0
+INV-104,StaplesDirect,Office,800,2026-08-25,200,8,0
+INV-105,JetBrains,Software,9500,2026-09-02,7500,20,1
+INV-106,HiltonHotels,Travel,2800,2026-09-08,2800,15,0
+INV-107,Atlassian,Software,3400,2026-09-14,3400,45,1
+INV-108,WorkSpacePro,Office,1500,2026-09-20,0,0,0
+INV-109,UnitedAirlines,Travel,6200,2026-09-27,5200,25,1
+INV-110,FigmaInc,Software,4100,2026-10-02,900,10,0
+INV-111,ErgoComfort,Office,2200,2026-10-05,1800,35,0
+INV-112,MarriottStays,Travel,3100,2026-10-10,1200,18,0
+INV-113,GitHubEnterprise,Software,8000,2026-10-12,8000,28,1
+INV-114,PaperCo,Office,500,2026-10-16,0,0,0
+INV-115,UberBusiness,Travel,1900,2026-10-20,600,5,0

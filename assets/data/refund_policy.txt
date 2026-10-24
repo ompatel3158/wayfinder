@@ -1,0 +1,11 @@
+All refund requests must follow standard organizational procurement guidelines. Employees submitting claims must provide valid receipts and vendor documentation. Every submission undergoes automated audit validation before payment processing.
+
+Refund requests are evaluated against strict eligibility deadlines. Refunds cannot be requested after 30 days (refund_days must be 30 or less). Claims submitted beyond this window are permanently rejected by the accounting system.
+
+High-value claims require additional supervisory review and authorization. Refunds over 5000 need manager approval (approved must be 1). If authorization is not granted by a direct manager, the refund cannot be issued.
+
+All approved refunds will be credited back via the original payment method. Processing typically takes between five to ten business days following approval. Bank processing times may vary depending on the financial institution.
+
+Partial refunds are permitted when only a portion of the services or goods were utilized. The requester must clearly itemize the unused items and attach updated invoices. Each line item must align with approved vendor contract rates.
+
+Disputes regarding rejected refund requests may be appealed within seven business days. Appeals must be directed to the finance oversight committee with supplemental evidence. The decision reached by the committee during appeal review is final.
