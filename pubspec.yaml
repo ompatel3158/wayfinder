@@ -61,6 +61,15 @@ flutter:
 
   assets:
     - assets/data/
+    - assets/fonts/
+
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter.ttf
+    - family: JetBrainsMono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono.ttf
 
   # To add assets to your application, add an assets section, like this:
   # assets:
@@ -92,4 +101,5 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
 

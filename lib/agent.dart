@@ -48,7 +48,10 @@ Future<void> warmup() async {
   } catch (_) {}
 }
 
-Future<AgentResult> ask(String question) async {
+Future<AgentResult> ask(
+  String question, {
+  void Function(String step)? onStep,
+}) async {
   final stopwatch = Stopwatch()..start();
   final db = AppDatabase.instance;
   if (!db.isInitialized) {
@@ -60,6 +63,7 @@ Future<AgentResult> ask(String question) async {
   }
 
   // 1. ROUTER
+  onStep?.call('Routing');
   const routerSystemPrompt = '''
 You route questions for a small database assistant. Sources:
 1. SQL table invoices(id, vendor, category, amount, invoice_date, refund_amount, refund_days, approved). approved is 0 or 1.
@@ -125,6 +129,7 @@ Return JSON only: {"route": "...", "search_query": "rules and limits for [topic]
 
   // 2. VECTOR SEARCH (if route is vector or both)
   if (route == 'vector' || route == 'both') {
+    onStep?.call('Searching policy');
     final queryText = searchQuery.isNotEmpty ? searchQuery : question;
     try {
       chunks = await searchPolicy(queryText, k: route == 'both' ? 5 : 3);
@@ -135,6 +140,7 @@ Return JSON only: {"route": "...", "search_query": "rules and limits for [topic]
 
   // 3. SQL GENERATION (if route is sql or both)
   if (route == 'sql' || route == 'both') {
+    onStep?.call('Writing SQL');
     final effectiveIntent = sqlIntent.isNotEmpty ? sqlIntent : question;
     final chunksSummary = chunks.isNotEmpty
         ? chunks.map((c) => '[${c.source}]: ${c.text}').join('\n')
@@ -213,6 +219,7 @@ Return JSON only: {"sql": "..."}
   }
 
   // 5. ANSWER GENERATION
+  onStep?.call('Answering');
   final rowsSummary = rows.isNotEmpty
       ? jsonEncode(rows)
       : 'none';
