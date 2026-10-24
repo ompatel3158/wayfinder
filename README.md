@@ -91,10 +91,15 @@ Launch Wayfinder in native Windows desktop mode:
 flutter run -d windows
 ```
 
-To build a standalone production release:
+To build a standalone production release locally:
 ```bash
 flutter build windows --release
 ```
+
+### 7. Pre-Built Windows Executable (CI/CD)
+Every push to `main` automatically builds and packages the complete standalone Windows application via GitHub Actions:
+- **Download Artifact**: Head to the [GitHub Actions tab](https://github.com/ompatel3158/wayfinder/actions), select the latest run, and download **`wayfinder-windows-x64.zip`**.
+- **Run**: Unzip the archive and double-click **`wayfinder.exe`**—no Flutter installation required!
 
 ---
 
